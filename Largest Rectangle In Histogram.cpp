@@ -1,81 +1,57 @@
-//Better Approach
-#include <bits/stdc++.h>
-
-using namespace std;
 class Solution {
-  public:
-    int largestRectangleArea(vector < int > & heights) {
-      int n = heights.size();
-      stack < int > st;
-      int leftsmall[n], rightsmall[n];
-      for (int i = 0; i < n; i++) {
-        while (!st.empty() && heights[st.top()] >= heights[i]) {
-          st.pop();
+public:
+    vector<int>LeftIndex(vector<int>& arr,int n)
+      {
+           vector<int>left;
+           stack<pair<int,int>>s;
+           int pseudoIndex=-1;
+           for(int i=0;i<n;i++)
+           {
+               if(s.size()==0) left.push_back(pseudoIndex);
+               else if(s.size()>0 && s.top().first<arr[i]) left.push_back(s.top().second);
+               else if(s.size()>0 && s.top().first>=arr[i])
+               {
+                      while(s.size()>0 && s.top().first>=arr[i]) {s.pop();}
+                      if(s.size()==0) left.push_back(pseudoIndex); 
+                      else left.push_back(s.top().second);
+               }
+               s.push({arr[i],i});
+        } 
+           return left;
+    }       
+    vector<int>RightIndex(vector<int>& arr,int n)
+    {
+        vector<int>right;
+        stack<pair<int,int>>s1;
+        int pseudoIndex2=n;
+        for(int i=n-1;i>=0;i--)
+        {
+            if(s1.size()==0) right.push_back(pseudoIndex2);
+            else if(s1.size()>0 && s1.top().first<arr[i]) right.push_back(s1.top().second);
+            else if(s1.size()>0 && s1.top().first>=arr[i])
+            {
+                while(s1.size()>0 && s1.top().first>=arr[i]) {s1.pop();}
+                if(s1.size()==0)right.push_back(pseudoIndex2); 
+                else right.push_back(s1.top().second);      
+            }
+            s1.push({arr[i],i});
         }
-        if (st.empty())
-          leftsmall[i] = 0;
-        else
-          leftsmall[i] = st.top() + 1;
-        st.push(i);
-      }
-      // clear the stack to be re-used
-      while (!st.empty())
-        st.pop();
-
-      for (int i = n - 1; i >= 0; i--) {
-        while (!st.empty() && heights[st.top()] >= heights[i])
-          st.pop();
-
-        if (st.empty())
-          rightsmall[i] = n - 1;
-        else
-          rightsmall[i] = st.top() - 1;
-
-        st.push(i);
-      }
-      int maxA = 0;
-      for (int i = 0; i < n; i++) {
-        maxA = max(maxA, heights[i] * (rightsmall[i] - leftsmall[i] + 1));
-      }
-      return maxA;
+        reverse(right.begin(),right.end());
+        return right;
+    }
+    int largestRectangleArea(vector<int>& arr) {
+        
+       int n = arr.size(); 
+       vector<int>left  =LeftIndex(arr,n);
+       vector<int>right =RightIndex(arr,n);
+       int area=0;
+       int mx=INT_MIN;
+       for(int i=0;i<n;i++)
+       {
+           int width=right[i]-left[i]-1;
+           area=arr[i]*width;
+           mx=max(mx,area);
+       }
+       return mx;
     }
 };
-int main() {
-  vector<int> heights = {2, 1, 5, 6, 2, 3, 1};
-  Solution obj;
-  cout << "The largest area in the histogram is " << obj.largestRectangleArea(heights); 
-  return 0;
-}
-
-//Optimal Approach
-#include <bits/stdc++.h>
-
-using namespace std;
-class Solution {
-  public:
-    int largestRectangleArea(vector < int > & histo) {
-      stack < int > st;
-      int maxA = 0;
-      int n = histo.size();
-      for (int i = 0; i <= n; i++) {
-        while (!st.empty() && (i == n || histo[st.top()] >= histo[i])) {
-          int height = histo[st.top()];
-          st.pop();
-          int width;
-          if (st.empty())
-            width = i;
-          else
-            width = i - st.top() - 1;
-          maxA = max(maxA, width * height);
-        }
-        st.push(i);
-      }
-      return maxA;
-    }
-};
-int main() {
-  vector < int > histo = {2, 1, 5, 6, 2, 3, 1};
-  Solution obj;
-  cout << "The largest area in the histogram is " << obj.largestRectangleArea(histo) << endl;
-  return 0;
-}
