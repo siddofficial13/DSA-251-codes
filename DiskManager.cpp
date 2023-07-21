@@ -9,7 +9,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <unordered_set>
-
+#include <sys/stat.h>
 #ifdef _WIN32
 
 #else
@@ -37,6 +37,267 @@ struct FileInfo
     std::string hash;
     uintmax_t size;
 };
+bool isRegularFile(const std::string &path)
+{
+    DWORD fileAttributes = GetFileAttributes(path.c_str());
+    return (fileAttributes != INVALID_FILE_ATTRIBUTES) && !(fileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+int countFiles(const std::string &directory)
+{
+    int fileCount = 0;
+    WIN32_FIND_DATA findFileData;
+    HANDLE hFind = FindFirstFile((directory + "\\*").c_str(), &findFileData);
+    if (hFind != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            std::string name = findFileData.cFileName;
+            if (name != "." && name != ".." && (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+            {
+                fileCount++;
+            }
+        } while (FindNextFile(hFind, &findFileData) != 0);
+
+        FindClose(hFind);
+    }
+    return fileCount;
+}
+void deleteExcessFiles2(const std::string &directory, int maxFiles)
+{
+    std::vector<std::string> filesToDelete;
+
+    WIN32_FIND_DATA findFileData;
+    HANDLE hFind = FindFirstFile((directory + "\\*").c_str(), &findFileData);
+    if (hFind != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            std::string name = findFileData.cFileName;
+            if (name != "." && name != ".." && (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+            {
+                filesToDelete.push_back(name);
+            }
+        } while (FindNextFile(hFind, &findFileData) != 0);
+
+        FindClose(hFind);
+    }
+
+    int fileCount = filesToDelete.size();
+    if (fileCount > maxFiles)
+    {
+        int filesToDeleteCount = fileCount - maxFiles;
+        std::sort(filesToDelete.begin(), filesToDelete.end());
+
+        for (int i = 0; i < filesToDeleteCount; ++i)
+        {
+            std::string filePath = directory + "\\" + filesToDelete[i];
+            if (isRegularFile(filePath))
+            {
+                if (DeleteFile(filePath.c_str()))
+                {
+                    std::cout << "Deleted file: " << filePath << std::endl;
+                }
+                else
+                {
+                    std::cerr << "Error deleting file: " << filePath << std::endl;
+                }
+            }
+        }
+    }
+}
+DWORD WINAPI processFilesDeepDownThread2(LPVOID lpParam)
+{
+    const std::pair<std::string, int> *params = static_cast<std::pair<std::string, int> *>(lpParam);
+    std::string directory = params->first;
+    int maxFiles = params->second;
+    delete params;
+
+    deleteExcessFiles2(directory, maxFiles);
+
+    WIN32_FIND_DATA findFileData;
+    HANDLE hFind = FindFirstFile((directory + "\\*").c_str(), &findFileData);
+    if (hFind != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            std::string name = findFileData.cFileName;
+            if (name != "." && name != ".." && (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            {
+                std::string subdirPath = directory + "\\" + name;
+
+                // Create a new thread for the subdirectory
+                std::pair<std::string, int> *subParams = new std::pair<std::string, int>(subdirPath, maxFiles);
+                HANDLE hThread = CreateThread(NULL, 0, processFilesDeepDownThread2, subParams, 0, NULL);
+                if (hThread)
+                {
+                    CloseHandle(hThread); // Close the thread handle to avoid resource leak
+                }
+            }
+        } while (FindNextFile(hFind, &findFileData) != 0);
+
+        FindClose(hFind);
+    }
+
+    return 0;
+}
+void processFilesDeepDown(const std::string &directory, int maxFiles)
+{
+    deleteExcessFiles2(directory, maxFiles);
+
+    WIN32_FIND_DATA findFileData;
+    HANDLE hFind = FindFirstFile((directory + "\\*").c_str(), &findFileData);
+    if (hFind != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            std::string name = findFileData.cFileName;
+            if (name != "." && name != ".." && (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            {
+                std::string subdirPath = directory + "\\" + name;
+
+                // Create a new thread for each subdirectory
+                std::pair<std::string, int> *params = new std::pair<std::string, int>(subdirPath, maxFiles);
+                HANDLE hThread = CreateThread(NULL, 0, processFilesDeepDownThread2, params, 0, NULL);
+                if (hThread)
+                {
+                    WaitForSingleObject(hThread, INFINITE); // Wait for the subdirectory thread to finish
+                    CloseHandle(hThread);
+                }
+            }
+        } while (FindNextFile(hFind, &findFileData) != 0);
+
+        FindClose(hFind);
+    }
+}
+
+
+int64_t getFileSize(const std::string &path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA fileData;
+    if (GetFileAttributesEx(path.c_str(), GetFileExInfoStandard, &fileData))
+    {
+        LARGE_INTEGER fileSize;
+        fileSize.HighPart = fileData.nFileSizeHigh;
+        fileSize.LowPart = fileData.nFileSizeLow;
+        return static_cast<int64_t>(fileSize.QuadPart);
+    }
+    return -1;
+}
+void deleteExcessFiles(const std::string &directory, int64_t thresholdSize)
+{
+    WIN32_FIND_DATA findFileData;
+    HANDLE hFind = FindFirstFile((directory + "\\*").c_str(), &findFileData);
+    if (hFind == INVALID_HANDLE_VALUE)
+    {
+        std::cerr << "Error opening directory." << std::endl;
+        return;
+    }
+
+    std::vector<std::string> filesToDelete;
+
+    do
+    {
+        std::string name = findFileData.cFileName;
+        if (name != "." && name != "..")
+        {
+            std::string filePath = directory + "\\" + name;
+            int64_t fileSize = getFileSize(filePath);
+            if (fileSize > thresholdSize)
+            {
+                filesToDelete.push_back(name);
+            }
+        }
+    } while (FindNextFile(hFind, &findFileData) != 0);
+
+    FindClose(hFind);
+
+    for (const std::string &fileName : filesToDelete)
+    {
+        std::string filePath = directory + "\\" + fileName;
+        if (isRegularFile(filePath))
+        {
+            if (DeleteFile(filePath.c_str()))
+            {
+                std::cout << "Deleted file: " << filePath << std::endl;
+            }
+            else
+            {
+                std::cerr << "Error deleting file: " << filePath << std::endl;
+            }
+        }
+    }
+}
+
+DWORD WINAPI processFilesDeepDownThread(LPVOID lpParam)
+{
+    std::string fullPath = *static_cast<std::string *>(lpParam);
+    delete static_cast<std::string *>(lpParam);
+
+    int64_t thresholdSize = 1024 * 1024; // Threshold size in bytes (e.g., 1 MB).
+    deleteExcessFiles(fullPath, thresholdSize);
+
+    WIN32_FIND_DATA findFileData;
+    HANDLE hFind = FindFirstFile((fullPath + "\\*").c_str(), &findFileData);
+    if (hFind == INVALID_HANDLE_VALUE)
+    {
+        std::cerr << "Error opening directory: " << fullPath << std::endl;
+        return 0;
+    }
+
+    std::vector<HANDLE> threads;
+
+    do
+    {
+        std::string name = findFileData.cFileName;
+        if (name != "." && name != "..")
+        {
+            std::string subFullPath = fullPath + "\\" + name;
+
+            if (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            {
+                // Create a new thread to process each subdirectory
+                std::string *param = new std::string(subFullPath);
+                HANDLE hThread = CreateThread(NULL, 0, processFilesDeepDownThread, param, 0, NULL);
+                if (hThread)
+                {
+                    threads.push_back(hThread);
+                }
+            }
+            else if (findFileData.dwFileAttributes & FILE_ATTRIBUTE_NORMAL)
+            {
+                int64_t fileSize = getFileSize(subFullPath);
+                if (fileSize > thresholdSize)
+                {
+                    if (isRegularFile(subFullPath))
+                    {
+                        if (DeleteFile(subFullPath.c_str()))
+                        {
+                            std::cout << "Deleted file: " << subFullPath << std::endl;
+                        }
+                        else
+                        {
+                            std::cerr << "Error deleting file: " << subFullPath << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+    } while (FindNextFile(hFind, &findFileData) != 0);
+
+    FindClose(hFind);
+
+    // Wait for all threads to finish
+    WaitForMultipleObjects(static_cast<DWORD>(threads.size()), threads.data(), TRUE, INFINITE);
+
+    // Close thread handles
+    for (HANDLE hThread : threads)
+    {
+        CloseHandle(hThread);
+    }
+
+    return 0;
+}
+
 DWORD WINAPI deleteDuplicatesThread(LPVOID lpParam)
 {
     ThreadParam *param = static_cast<ThreadParam *>(lpParam);
@@ -436,7 +697,7 @@ private:
         uintmax_t size;
     };
 
-    static std::wstring formatBytes(ULONGLONG bytes)
+   static std::wstring formatBytes(ULONGLONG bytes)
     {
         const wchar_t* units[] = { L"Bytes", L"KB", L"MB", L"GB", L"TB", L"PB", L"EB", L"ZB", L"YB" };
         int unitIndex = 0;
@@ -685,15 +946,16 @@ public:
     void displayMenu()
     {
         std::cout << "================ Disk Manager Menu =====================\n";
-        std::cout<<"1. Display the amount of free space available on the disk\n";
-        std::cout<<"2. Present the amount of space utilized on the disk\n";
-        std::cout<<"3. Provide a breakdown of space utilization\n";
-        std::cout<<"4. Delete duplicate files \n";
-        std::cout<<"5. Identify large files\n";
-        std::cout<<"6. Provide the capability to scan specific file types\n";
-        std::cout<<"7. Enable fast and efficient delete\n";
-        std::cout<<"8. Allow users to delete files of specific types\n";
-        std::cout<<"9. Detect duplicate files\n";
+        std::cout<<"1.  Display the amount of free space available on the disk\n";
+        std::cout<<"2.  Present the amount of space utilized on the disk\n";
+        std::cout<<"3.  Provide a breakdown of space utilization\n";
+        std::cout<<"4.  Delete duplicate files \n";
+        std::cout<<"5.  Identify large files\n";
+        std::cout<<"6.  Provide the capability to scan specific file types based on the extension\n";
+        std::cout<<"7.  Allow Deletion Of large files\n";
+        std::cout<<"8.  Allow users to delete files of specific types based on the extensions\n";
+        std::cout<<"9.  Detect duplicate files\n";
+        std::cout<<"10. Delete Excess Files\n";
 
     }
     void processChoice(int choice)
@@ -726,6 +988,9 @@ public:
                 break;
             case 9:
                 option9();
+                break;
+            case 10:
+                option10();
                 break;
             case 0:
                 std::cout << "Exiting the program. Goodbye!\n";
@@ -1007,12 +1272,17 @@ public:
     }
     void option7()
     {
-        std::string directoryPath = "C:\\Users\\Siddharth\\Desktop\\SampleDirectory";
-        int maxSubdirectories = 2; // Maximum number of subdirectories you want to keep.
+        std::string directoryPath = "C:\\Users\\Siddharth\\Desktop\\sample2";
 
-        int subdirCount = countSubdirectories(directoryPath);
-        std::cout << "Number of subdirectories in " << directoryPath << ": " << subdirCount << std::endl;
-        processSubdirectoriesDeepDown(directoryPath, maxSubdirectories);
+        // Create a new thread for the root directory
+        std::string *param = new std::string(directoryPath);
+        HANDLE hThread = CreateThread(NULL, 0, processFilesDeepDownThread, param, 0, NULL);
+        if (hThread)
+        {
+            // Wait for the root thread to finish
+            WaitForSingleObject(hThread, INFINITE);
+            CloseHandle(hThread);
+        }
     }
 
     void option8()
@@ -1051,7 +1321,15 @@ public:
         const std::string directoryPath = "C:\\Users\\Siddharth\\Desktop\\sample2"; // Change this to your desired root directory
 
         FindDuplicateFilesThread(directoryPath);
-    }
+   }
+   void option10(){
+       std::string directoryPath = "C:\\Users\\Siddharth\\Desktop\\sample2";
+       int maxFiles = 5; // Maximum number of files you want to keep.
+
+       int fileCount = countFiles(directoryPath);
+       std::cout << "Number of files in " << directoryPath << ": " << fileCount << std::endl;
+       processFilesDeepDown(directoryPath, maxFiles);
+   }
 
 
 
@@ -1066,7 +1344,7 @@ int main()
     do
     {
         program.displayMenu();
-        std::cout << "Enter your choice (1-9, 0 to exit): ";
+        std::cout << "Enter your choice (1-10, 0 to exit): ";
         std::cin >> choice;
         program.processChoice(choice);
     }
