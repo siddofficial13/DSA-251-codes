@@ -34,7 +34,7 @@ string mod2div(string dividend, string divisor)
     if (temp[0] == '1')
         temp = xor1(divisor, temp);
     else
-        temp = xor1(divisor, temp);
+        temp = xor1(string(pick,'0'), temp);
 
     return temp;
 }
